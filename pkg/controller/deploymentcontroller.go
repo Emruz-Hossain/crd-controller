@@ -23,10 +23,10 @@ import (
 	"os"
 	"math/rand"
 	"strconv"
+	"math"
 )
-var PreviousPodPhase map[string]string
-var PodOwnerKey map[string]string
-var synchronizationnChannel chan bool
+
+
 
 type Controller struct{
 	// for custom deployment
@@ -42,6 +42,9 @@ type Controller struct{
 	podInformer 		cache.Controller
 	podWorkQueue		workqueue.RateLimitingInterface
 	deletedPodIndexer 	cache.Indexer
+
+	PreviousPodPhase map[string]string
+	PodOwnerKey map[string]string
 	}
 
 func NewController(clientset clientversioned.Clientset, kubeclientset kubernetes.Clientset)  *Controller{
@@ -156,6 +159,9 @@ func NewController(clientset clientversioned.Clientset, kubeclientset kubernetes
 		podWorkQueue:		podWorkQueue,
 		deletedPodIndexer:	deletedPodIndexer,
 
+		PreviousPodPhase: 	make(map[string]string),
+		PodOwnerKey:	 	make(map[string]string),
+
 
 	}
 
@@ -177,9 +183,6 @@ func getKubeConfigPath () string {
 }
 
 func StartDeploymentController(thrediness int)  {
-
-	PreviousPodPhase=make(map[string]string)
-	PodOwnerKey = make(map[string]string)
 
 	//get path of kubeconfig
 	configPath:=getKubeConfigPath();
@@ -308,51 +311,57 @@ func (c *Controller)performActionOnThisDeploymentKey(key string) error {
 
 		fmt.Println("Sync/Add/Update happed for deployment ",customdeployment.GetName())
 
-		fmt.Printf("Required: %v | Available: %v | Processing: %v\n",customdeployment.Spec.Replicas,customdeployment.Status.AvailableReplicas,customdeployment.Status.CurrentlyProcessing)
+		fmt.Printf("Required: %v | Available: %v | Creating: %v	|	Terminating: %v\n",customdeployment.Spec.Replicas,customdeployment.Status.AvailableReplicas,customdeployment.Status.CreatingReplicas,customdeployment.Status.TerminatingReplicas)
 
 		label:=""
 		//If Current State is not same as Expected State preform necessary modification to meet the Goal.
-		if customdeployment.Status.AvailableReplicas+customdeployment.Status.CurrentlyProcessing < customdeployment.Spec.Replicas{
+		if customdeployment.Status.AvailableReplicas+customdeployment.Status.CreatingReplicas-customdeployment.Status.TerminatingReplicas<customdeployment.Spec.Replicas{
 
 			//create pod
 			pod,err:= c.CreateNewPod(customdeployment.Spec.Template, customdeployment)
 
 			//Failed to create to pod
 			if err!=nil{
-				fmt.Printf("Can't create pod. Error: %v\n",err.Error())
 
+				fmt.Printf("Can't create pod. Reason: %v\n",err.Error())
 				return err
 			}
 
 			// Pod successfully created. Hence, update deployment status
 			podName:=string(pod.GetName())
-			PodOwnerKey[podName]=key
-			mp:=pod.GetLabels()
+			c.PodOwnerKey[podName]=key
+			c.PreviousPodPhase[podName]="Creating"
 
+			mp:=pod.GetLabels()
 			for key,value:= range mp{
-				label+=key+":"+value
+				label+=key+"="+value
 			}
 
 			fmt.Printf("PodName: %s OwnerKey: %s	Label: %v\n",podName,key,label)
-
-			err2:=c.UpdateDeploymentStatus(customdeployment,customdeployment.Status.AvailableReplicas,customdeployment.Status.CurrentlyProcessing+1)
+			err2:=c.UpdateDeploymentStatus(customdeployment,customdeployment.Status.AvailableReplicas,customdeployment.Status.CreatingReplicas+1,customdeployment.Status.TerminatingReplicas)
 
 			if err2!=nil{
 				fmt.Printf("Pod created but failed to update DeploymentStatus.")
 				return err2
 			}
 
-		}else if customdeployment.Status.AvailableReplicas+customdeployment.Status.CurrentlyProcessing > customdeployment.Spec.Replicas{
+		}else if customdeployment.Status.AvailableReplicas+int32(math.Abs(float64(customdeployment.Status.CurrentlyProcessing))) > customdeployment.Spec.Replicas{
 
 			err=c.DeletePod(label, int(customdeployment.Status.AvailableReplicas+customdeployment.Status.CurrentlyProcessing-customdeployment.Spec.Replicas))
 
 			if err!=nil{
-				fmt.Printf("Failed to delete pod.")
+
+				fmt.Println("Can't Delete Pod. Reason: ",err)
 				return err
 			}
 
 		}else{
-			// Nothing to do...
+			err2:=c.UpdateDeploymentStatus(customdeployment,customdeployment.Status.AvailableReplicas,customdeployment.Status.CurrentlyProcessing+1)
+
+			if err2!=nil{
+				fmt.Printf("Pod created but failed to update DeploymentStatus.")
+				return err2
+			}
 		}
 	}
 	return  nil
@@ -512,19 +521,36 @@ func (c *Controller)CreateNewPod(podTemplate crdv1alpha1.CustomPodTemplate, cust
 }
 
 func (c *Controller)DeletePod(label string, deleteLimit int)  error{
-	//podClient:= c.kubeclient.CoreV1().Pods(api_v1.NamespaceDefault)
+	podClient:= c.kubeclient.CoreV1().Pods(api_v1.NamespaceDefault)
 
 	podList,err:=c.kubeclient.CoreV1().Pods(api_v1.NamespaceDefault).List(meta_v1.ListOptions{LabelSelector: label})
 	if err!=nil{
 		fmt.Println(err)
 	}
-	fmt.Println("----------------------")
-	fmt.Println(podList)
+	deletedPod:=0
+	for _,pod:=range podList.Items{
+
+		delErr:=podClient.Delete(pod.GetName(),&meta_v1.DeleteOptions{})
+
+		if delErr!=nil{
+
+			return err
+		}
+
+		deletedPod++
+
+		if deletedPod>=deleteLimit{
+			break
+		}
+	}
+	if deletedPod<deleteLimit{
+
+	}
 	return nil
 }
 
 func (c *Controller)checkAndUpdatePodStatus(podphase string,key string,podName string)  error{
-	fmt.Printf("## PreviousPodPhase: %v CurrentPodPhase: %v\n",PreviousPodPhase[podName],podphase)
+
 	if PreviousPodPhase[podName]!=podphase{
 
 		podownerkey:=PodOwnerKey[podName]
@@ -560,14 +586,15 @@ func (c *Controller)checkAndUpdatePodStatus(podphase string,key string,podName s
 	return nil
 }
 
-func (c *Controller)UpdateDeploymentStatus(customdeployment *crdv1alpha1.CustomDeployment, AvailableReplicas int32, CurrentlyProcessing int32) error{
+func (c *Controller)UpdateDeploymentStatus(customdeployment *crdv1alpha1.CustomDeployment, AvailableReplicas int32, CreatingReplicas int32, TerminatingReplicas int32) error{
 
 	//Don't modify cache. Work on it's copy
 	customdeploymentCopy:= customdeployment.DeepCopy()
 
 	customdeploymentCopy.Spec.Replicas = customdeployment.Spec.Replicas
 	customdeploymentCopy.Status.AvailableReplicas = AvailableReplicas
-	customdeploymentCopy.Status.CurrentlyProcessing = CurrentlyProcessing
+	customdeploymentCopy.Status.CreatingReplicas = CreatingReplicas
+	customdeploymentCopy.Status.TerminatingReplicas = TerminatingReplicas
 
 	//Now update the cache
 	_,err:=c.clientset.CrdV1alpha1().CustomDeployments(api_v1.NamespaceDefault).Update(customdeploymentCopy)

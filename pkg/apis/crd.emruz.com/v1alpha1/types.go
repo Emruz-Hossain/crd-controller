@@ -27,7 +27,8 @@ type CustomDeploymentSpec struct {
 //Status for CustomDeployment
 type CustomDeploymentStatus struct{
 	AvailableReplicas	int32 `json:"available_replicas"`
-	CurrentlyProcessing	int32 `json:"currently_processing"`
+	CreatingReplicas	int32 `json:"creating_replicas"`
+	TerminatingReplicas int32 `json:"terminating_replicas"`
 }
 
 //Specification for DemoPod
