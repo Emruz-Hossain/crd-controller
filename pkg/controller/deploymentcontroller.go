@@ -23,7 +23,7 @@ import (
 	"os"
 	"math/rand"
 	"strconv"
-	"math"
+
 )
 
 
@@ -42,6 +42,7 @@ type Controller struct{
 	podInformer 		cache.Controller
 	podWorkQueue		workqueue.RateLimitingInterface
 	deletedPodIndexer 	cache.Indexer
+	podLabel string
 
 	PreviousPodPhase map[string]string
 	PodOwnerKey map[string]string
@@ -158,6 +159,7 @@ func NewController(clientset clientversioned.Clientset, kubeclientset kubernetes
 		podInformer: 		podInformer,
 		podWorkQueue:		podWorkQueue,
 		deletedPodIndexer:	deletedPodIndexer,
+		podLabel: "",
 
 		PreviousPodPhase: 	make(map[string]string),
 		PodOwnerKey:	 	make(map[string]string),
@@ -314,20 +316,20 @@ func (c *Controller)performActionOnThisDeploymentKey(key string) error {
 		fmt.Printf("Required: %v | Available: %v | Creating: %v	|	Terminating: %v\n",customdeployment.Spec.Replicas,customdeployment.Status.AvailableReplicas,customdeployment.Status.CreatingReplicas,customdeployment.Status.TerminatingReplicas)
 
 		label:=""
+
 		//If Current State is not same as Expected State preform necessary modification to meet the Goal.
-		if customdeployment.Status.AvailableReplicas+customdeployment.Status.CreatingReplicas-customdeployment.Status.TerminatingReplicas<customdeployment.Spec.Replicas{
+		if customdeployment.Status.AvailableReplicas+customdeployment.Status.CreatingReplicas<customdeployment.Spec.Replicas{
 
 			//create pod
 			pod,err:= c.CreateNewPod(customdeployment.Spec.Template, customdeployment)
 
 			//Failed to create to pod
 			if err!=nil{
-
 				fmt.Printf("Can't create pod. Reason: %v\n",err.Error())
 				return err
 			}
 
-			// Pod successfully created. Hence, update deployment status
+			// Pod successfully created.
 			podName:=string(pod.GetName())
 			c.PodOwnerKey[podName]=key
 			c.PreviousPodPhase[podName]="Creating"
@@ -337,31 +339,33 @@ func (c *Controller)performActionOnThisDeploymentKey(key string) error {
 				label+=key+"="+value
 			}
 
-			fmt.Printf("PodName: %s OwnerKey: %s	Label: %v\n",podName,key,label)
-			err2:=c.UpdateDeploymentStatus(customdeployment,customdeployment.Status.AvailableReplicas,customdeployment.Status.CreatingReplicas+1,customdeployment.Status.TerminatingReplicas)
+			c.podLabel=label
+
+			fmt.Printf("+++++Pod created. PodName: %s OwnerKey: %s	Label: %v\n",podName,key,label)
+			err2:=c.UpdateDeploymentStatus(customdeployment)
 
 			if err2!=nil{
 				fmt.Printf("Pod created but failed to update DeploymentStatus.")
 				return err2
 			}
 
-		}else if customdeployment.Status.AvailableReplicas+int32(math.Abs(float64(customdeployment.Status.CurrentlyProcessing))) > customdeployment.Spec.Replicas{
+		}else if customdeployment.Status.AvailableReplicas+customdeployment.Status.CreatingReplicas> customdeployment.Spec.Replicas{
 
-			err=c.DeletePod(label, int(customdeployment.Status.AvailableReplicas+customdeployment.Status.CurrentlyProcessing-customdeployment.Spec.Replicas))
+			err:=c.DeletePod(customdeployment.Status.AvailableReplicas+customdeployment.Status.CreatingReplicas-customdeployment.Spec.Replicas)
 
 			if err!=nil{
-
 				fmt.Println("Can't Delete Pod. Reason: ",err)
 				return err
 			}
 
-		}else{
-			err2:=c.UpdateDeploymentStatus(customdeployment,customdeployment.Status.AvailableReplicas,customdeployment.Status.CurrentlyProcessing+1)
-
-			if err2!=nil{
-				fmt.Printf("Pod created but failed to update DeploymentStatus.")
-				return err2
+			err=c.UpdateDeploymentStatus(customdeployment)
+			if err!=nil{
+				fmt.Println("Failed to update DeploymentStatus.")
+				return err
 			}
+
+		}else{
+			// Everything is ok. nothing to do. :)
 		}
 	}
 	return  nil
@@ -438,16 +442,32 @@ func (c *Controller)performActionOnThisPodKey(key string) error {
 		if err==nil && exist{
 			fmt.Printf("pod %s has been deleted.\n",key)
 
-			c.deletedPodIndexer.Delete(key) //done with the objec
+			c.deletedPodIndexer.Delete(key) //done with the object
 			deletedPod:=deletedObj.(*api_v1.Pod).DeepCopy()
 
-			podPhase:="Failed"
+			podPhase:=deletedPod.Status.Phase
 			podName:=deletedPod.GetName()
 
-			err:=c.checkAndUpdatePodStatus(string(podPhase),key,string(podName))
+			if podPhase=="Succeeded" || podPhase=="Failed"{
+				c.PreviousPodPhase[podName]="Terminated"
+			}
+			podownerkey:=c.PodOwnerKey[podName]
+			ownerObj,exist,err :=c.deploymentIndexer.GetByKey(podownerkey)
 
-			delete(PreviousPodPhase,podName)
-			delete(PodOwnerKey,key)
+			if err!=nil{
+				fmt.Println("Can't get podOwner object. Reason: ",err)
+				return err
+			}
+
+			if !exist{
+				fmt.Println("Owner does not exist")
+				return err
+			}
+
+			customdeployment:=ownerObj.(*crdv1alpha1.CustomDeployment).DeepCopy()
+
+			err =c.UpdateDeploymentStatus(customdeployment)
+
 			return err
 
 		}
@@ -457,14 +477,37 @@ func (c *Controller)performActionOnThisPodKey(key string) error {
 		pod:=obj.(*api_v1.Pod).DeepCopy()
 
 		fmt.Println("Sync/Add/Update happed for Pod: ",pod.GetName())
-		podPhase:=pod.Status.Phase
+		curPodPhase:=pod.Status.Phase
 		podName:=pod.GetName()
 
-		err:=c.checkAndUpdatePodStatus(string(podPhase),key,string(podName))
-
-		if err==nil{
-			PreviousPodPhase[string(podName)]=string(podPhase)
+		if c.PreviousPodPhase[podName]=="Creating"&&curPodPhase=="Running"{
+			c.PreviousPodPhase[podName]="Running"
+		}else{
+			// no change required
 		}
+
+		podownerkey:=c.PodOwnerKey[podName]
+		ownerObj,exist,err :=c.deploymentIndexer.GetByKey(podownerkey)
+
+		if err!=nil{
+			fmt.Println("Can't get podOwner object. Reason: ",err)
+			return err
+		}
+
+		if !exist{
+			fmt.Println("Owner does not exist")
+			return err
+		}
+
+		customdeployment:=ownerObj.(*crdv1alpha1.CustomDeployment).DeepCopy()
+
+		err =c.UpdateDeploymentStatus(customdeployment)
+		if err!=nil{
+			fmt.Println("Can't update DeploymentStatus. Reason: ",err)
+			return err
+		}
+		fmt.Printf("Required: %v | Available: %v | Creating: %v	|	Terminating: %v\n",customdeployment.Spec.Replicas,customdeployment.Status.AvailableReplicas,customdeployment.Status.CreatingReplicas,customdeployment.Status.TerminatingReplicas)
+
 		return err
 
 	}
@@ -520,85 +563,68 @@ func (c *Controller)CreateNewPod(podTemplate crdv1alpha1.CustomPodTemplate, cust
 	return newPod,err
 }
 
-func (c *Controller)DeletePod(label string, deleteLimit int)  error{
+func (c *Controller)DeletePod(deletionLimit int32)  error{
+
 	podClient:= c.kubeclient.CoreV1().Pods(api_v1.NamespaceDefault)
 
-	podList,err:=c.kubeclient.CoreV1().Pods(api_v1.NamespaceDefault).List(meta_v1.ListOptions{LabelSelector: label})
+	podList,err:=c.kubeclient.CoreV1().Pods(api_v1.NamespaceDefault).List(meta_v1.ListOptions{LabelSelector: c.podLabel})
 	if err!=nil{
-		fmt.Println(err)
+		fmt.Println("Can't get pod list. Reason: ",err)
 	}
-	deletedPod:=0
+
+	deletedPod:=int32(0)
+
 	for _,pod:=range podList.Items{
 
 		delErr:=podClient.Delete(pod.GetName(),&meta_v1.DeleteOptions{})
 
 		if delErr!=nil{
-
-			return err
+			return delErr
+		}else{
+			c.PreviousPodPhase[pod.GetName()]="Terminating"
+			deletedPod++
+			if deletedPod>=deletionLimit{
+				break
+			}
 		}
-
-		deletedPod++
-
-		if deletedPod>=deleteLimit{
-			break
-		}
-	}
-	if deletedPod<deleteLimit{
-
-	}
-	return nil
-}
-
-func (c *Controller)checkAndUpdatePodStatus(podphase string,key string,podName string)  error{
-
-	if PreviousPodPhase[podName]!=podphase{
-
-		podownerkey:=PodOwnerKey[podName]
-		ownerObj,exist,err :=c.deploymentIndexer.GetByKey(podownerkey)
-
-		if err!=nil{
-			fmt.Println("Error in getting deployment object from podownerkey")
-			return err
-		}
-
-		if !exist{
-			fmt.Println("Owner does not exist")
-			return err
-		}
-		customdeployment:=ownerObj.(*crdv1alpha1.CustomDeployment).DeepCopy()
-
-		available:=customdeployment.Status.AvailableReplicas
-		processing:=customdeployment.Status.CurrentlyProcessing
-
-		fmt.Printf("PreviousPodPhase: %v CurrentPodPhase: %v\n",PreviousPodPhase[key],podphase)
-
-		if podphase=="Failed"{
-			err:=c.UpdateDeploymentStatus(customdeployment,available-1,processing)
-			return err
-
-		}else if podphase=="Running"&&PreviousPodPhase[podName]=="Pending"{
-				err:=c.UpdateDeploymentStatus(customdeployment,available+1,processing-1)
-				return err
-		}
-
 	}
 
 	return nil
 }
 
-func (c *Controller)UpdateDeploymentStatus(customdeployment *crdv1alpha1.CustomDeployment, AvailableReplicas int32, CreatingReplicas int32, TerminatingReplicas int32) error{
+func (c *Controller)UpdateDeploymentStatus(customdeployment *crdv1alpha1.CustomDeployment) error{
+
+	running:=0
+	creating:=0
+	terminating:=0
+
+	podList,err:=c.kubeclient.CoreV1().Pods(api_v1.NamespaceDefault).List(meta_v1.ListOptions{LabelSelector: c.podLabel})
+	if err!=nil{
+		fmt.Println("Can't get pod list. Reason: ",err)
+	}
+
+	for _,pod:=range podList.Items{
+
+		if c.PreviousPodPhase[pod.GetName()]=="Creating"{
+			creating++
+		}else if c.PreviousPodPhase[pod.GetName()]=="Running"{
+			running++
+		}else if c.PreviousPodPhase[pod.GetName()]=="Terminating"{
+			terminating++
+		}
+
+	}
 
 	//Don't modify cache. Work on it's copy
 	customdeploymentCopy:= customdeployment.DeepCopy()
 
 	customdeploymentCopy.Spec.Replicas = customdeployment.Spec.Replicas
-	customdeploymentCopy.Status.AvailableReplicas = AvailableReplicas
-	customdeploymentCopy.Status.CreatingReplicas = CreatingReplicas
-	customdeploymentCopy.Status.TerminatingReplicas = TerminatingReplicas
+	customdeploymentCopy.Status.AvailableReplicas = int32(running)
+	customdeploymentCopy.Status.CreatingReplicas = int32(creating)
+	customdeploymentCopy.Status.TerminatingReplicas = int32(terminating)
 
 	//Now update the cache
-	_,err:=c.clientset.CrdV1alpha1().CustomDeployments(api_v1.NamespaceDefault).Update(customdeploymentCopy)
-
+	_,err=c.clientset.CrdV1alpha1().CustomDeployments(api_v1.NamespaceDefault).Update(customdeploymentCopy)
 
 	return err
 }
