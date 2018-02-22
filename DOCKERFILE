@@ -1,0 +1,3 @@
+FROM busybox:glibc
+ADD crd-apiserver /
+ENTRYPOINT ["/crd-apiserver"]

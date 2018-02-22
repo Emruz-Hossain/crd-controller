@@ -1,31 +1,33 @@
 package server
 
 import (
-	"io"
-	genericoptions "k8s.io/apiserver/pkg/server/options"
-	genericapiserver "k8s.io/apiserver/pkg/server"
 	"crd-controller/pkg/apis/crd.emruz.com/v1alpha1"
 	"fmt"
+	"io"
+	genericapiserver "k8s.io/apiserver/pkg/server"
+	genericoptions "k8s.io/apiserver/pkg/server/options"
 	"net"
+	informers "crd-controller/pkg/client/informers/externalversions"
 )
 
-const(
+const (
 	defaultEtcdPathPrefix = "/registry/crd.emruz.com"
 )
 
 type CrdServerOptions struct {
 	RecommendedOptions *genericoptions.RecommendedOptions
 
-	StdOut io.Writer
-	StdErr io.Writer
+	SharedInformerFactory informers.SharedInformerFactory
+	StdOut                io.Writer
+	StdErr                io.Writer
 }
 
 func NewCrdServerOptions(out, errOut io.Writer) *CrdServerOptions {
 	opt := &CrdServerOptions{
 		RecommendedOptions: genericoptions.NewRecommendedOptions(defaultEtcdPathPrefix, Codecs.LegacyCodec(v1alpha1.SchemeGroupVersion)),
 
-		StdOut:             out,
-		StdErr:             errOut,
+		StdOut: out,
+		StdErr: errOut,
 	}
 	opt.RecommendedOptions.Etcd = nil
 
@@ -47,12 +49,12 @@ func (opt CrdServerOptions) Config() (*CrdServerConfig, error) {
 	}
 
 	serverConfig := genericapiserver.NewRecommendedConfig(Codecs)
-	if err := opt.RecommendedOptions.ApplyTo(serverConfig); err != nil {
+	if err := opt.RecommendedOptions.ApplyTo(serverConfig,Scheme); err != nil {
 		return nil, err
 	}
 
 	config := &CrdServerConfig{
-		GenericConfig:    serverConfig,
+		GenericConfig: serverConfig,
 	}
 	return config, nil
 }

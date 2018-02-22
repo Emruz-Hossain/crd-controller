@@ -1,0 +1,73 @@
+# create dedicated namespace for apiserver
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crd-apiserver-ns
+spec:
+---
+
+# create service account for authorization of apiserver
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: crd-apiserver-sa
+  namespace: crd-apiserver-ns
+---
+
+# create ClusterRoleBinding to delegate auth decisions to Kubernetes Core API server
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crd-apiserver:system:auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: crd-apiserver-sa
+  namespace: crd-apiserver-ns
+---
+
+# create RoleBinding to allow apiserver to access "extension-apiserver-authentication" configmap
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: crd-apiserver-reader
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: crd-apiserver-sa
+  namespace: crd-apiserver-ns
+---
+
+# create Deployment for apiserver and etcd
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crd-apiserver
+  namespace: crd-apiserver-ns
+  labels:
+    apiserver: "crd-apiserver"
+spec:
+  replicas: 1
+  selector:
+    apiserver: "crd-apiserver"
+  template:
+    metadata:
+      labels:
+        apiserver: "crd-apiserver"
+    spec:
+      serviceAccountName: apiserver
+      containers:
+      - name: wardle-server
+        image: emruzhossain/kube-sample-apiserver:v1
+        imagePullPolicy: IfNotPresent
+        command: [ "/kube-sample-apiserver", "--etcd-servers=http://localhost:2379" ]
+      - name: etcd
+        image: quay.io/coreos/etcd:v3.2.14
+

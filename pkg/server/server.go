@@ -69,6 +69,10 @@ func (c *completedConfig) New() (*CrdServer, error) {
 	s := &CrdServer{
 		GenericAPIServer: genricServer,
 	}
+	//apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(CrdServer.GroupName, registry, Scheme, metav1.ParameterCodec, Codecs)
+	//apiGroupInfo.GroupMeta.GroupVersion = v1alpha1.SchemeGroupVersion
+	//v1alpha1storage := map[string]rest.Storage{}
+	//apiGroupInfo.VersionedResourcesStorageMap["v1alpha1"] = v1alpha1storage
 
 	return s, nil
 }
