@@ -30,5 +30,7 @@ func NewCmdRun(out, errOut io.Writer, stopCh <-chan struct{}) *cobra.Command {
 			return nil
 		},
 	}
+	flags := cmd.Flags()
+	opt.RecommendedOptions.AddFlags(flags)
 	return cmd
 }

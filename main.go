@@ -1,16 +1,22 @@
 package main
 
 import (
-	// "k8s.io/code-generator"
+	 //"k8s.io/code-generator"
 
 	"crd-controller/pkg/cmds"
-	"fmt"
+
+	"flag"
+	"github.com/appscode/go/log"
 )
 
 func main() {
 	//controller.StartDeploymentController(1)
-	err := cmds.NewRootCmd().Execute()
+	rootCmd:= cmds.NewRootCmd()
+	rootCmd.Flags().AddGoFlagSet(flag.CommandLine)
+
+	err := rootCmd.Execute()
 	if err != nil {
-		fmt.Errorf("Error in runnig root command. Reason: ", err.Error())
+		log.Fatalf(err.Error())
 	}
+	select {}
 }

@@ -7,9 +7,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/version"
 	genericapiserver "k8s.io/apiserver/pkg/server"
+	"crd-controller/pkg/apis/crd.emruz.com/v1alpha1"
+	"crd-controller/pkg/apis/crd.emruz.com"
+	"k8s.io/apimachinery/pkg/apimachinery/registered"
+	"k8s.io/apiserver/pkg/registry/rest"
+	cdpregistry "crd-controller/pkg/registry"
+	cdpstorage "crd-controller/pkg/registry/crd.emruz.com/customdeployment"
 )
 
 var (
+	registry = registered.NewOrDie("")
 	Scheme = runtime.NewScheme()
 	Codecs = serializer.NewCodecFactory(Scheme)
 )
@@ -69,10 +76,17 @@ func (c *completedConfig) New() (*CrdServer, error) {
 	s := &CrdServer{
 		GenericAPIServer: genricServer,
 	}
-	//apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(CrdServer.GroupName, registry, Scheme, metav1.ParameterCodec, Codecs)
-	//apiGroupInfo.GroupMeta.GroupVersion = v1alpha1.SchemeGroupVersion
-	//v1alpha1storage := map[string]rest.Storage{}
-	//apiGroupInfo.VersionedResourcesStorageMap["v1alpha1"] = v1alpha1storage
+	apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(crd_emruz_com.GroupName, registry, Scheme, metav1.ParameterCodec, Codecs)
+	apiGroupInfo.GroupMeta.GroupVersion = v1alpha1.SchemeGroupVersion
+	v1alpha1storage := map[string]rest.Storage{}
+	v1alpha1storage["customdeployment"] = cdpregistry.RESTInPeace(cdpstorage.NewREST(Scheme, c.GenericConfig.RESTOptionsGetter))
+
+
+	apiGroupInfo.VersionedResourcesStorageMap["v1alpha1"] = v1alpha1storage
+
+	if err := s.GenericAPIServer.InstallAPIGroup(&apiGroupInfo); err != nil {
+		return nil, err
+	}
 
 	return s, nil
 }
